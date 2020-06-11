@@ -2,7 +2,8 @@ This code is part of DICER: Diligent Cache Partitioning for Efficient Workload C
 
 https://dl.acm.org/citation.cfm?id=3337891
 
-Use config-core.cfg for core monitoring or config-os.cfg for PID monitoring
+Use config-core.cfg for core monitoring or config-os.cfg for PID monitoring.
+
 Make sure to specify correct paths in run_executables.sh
 
 Added options in config files:
