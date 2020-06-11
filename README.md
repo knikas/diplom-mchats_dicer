@@ -1,5 +1,3 @@
-#dicer
-
 This code is part of DICER: Diligent Cache Partitioning for Efficient Workload Co-location publication. Link below:
 
 https://dl.acm.org/citation.cfm?id=3337891
