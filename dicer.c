@@ -55,8 +55,8 @@ struct process_info {
 	uint64_t cycles;
 };
 
-int allocation[N_HIS_MEAS], current_allocation, opt_allocation, stopped_processes = 0, bw_sat_counter = 0, prev_sampling = 0;
-double ipc[N_HIS_MEAS], bw_hp[N_HIS_MEAS], hp_mpki[N_HIS_MEAS], sample_ipc[NUM_SAMPLES], ipc_opt = 0.0, geometric_mean, coeff;
+int allocation[N_HIS_MEAS], current_allocation, opt_allocation, stopped_processes = 0, bw_sat_counter = 0, prev_sampling = 0, prev_reset = 0;
+double ipc[N_HIS_MEAS], bw_hp[N_HIS_MEAS], hp_mpki[N_HIS_MEAS], sample_ipc[NUM_SAMPLES], ipc_opt = 0.0, geometric_mean, coeff, coeff_sam;
 char *hp_bench, *be_bench, *core_list[NUM];
 static char *sel_output_file = NULL;
 static int high_prio_core = 0, samples[NUM_SAMPLES]={19, 18, 16, 14, 12, 10, 8, 6, 4, 2};
@@ -211,6 +211,7 @@ void dicer_driver(void){
 	const size_t sz_header = 128;
 	char header[sz_header], cb_time[64];
 	coeff = 10.0 / (double)sel_mon_interval;
+	coeff_sam = 1000000 / SAMPLING_TIME;
 
 	const int iscsv = !strcasecmp(sel_output_type, "csv");
 	if (iscsv) {
@@ -255,6 +256,27 @@ void dicer_driver(void){
 		total_bandwidth_gb = transform_MB_to_GB(total_bandwidth);
 		geometric_mean = calculate_geomean(bw_hp);
 		
+		today = localtime(&tv_s.tv_sec);
+                if (iscsv) {
+                        if (today != NULL)
+                                strftime(cb_time, sizeof(cb_time) - 1,"%Y-%m-%d %H:%M:%S", today);
+                        else
+                                strncpy(cb_time, "error", sizeof(cb_time) - 1);
+
+                        FILE *fd = fopen_check_symlink(sel_output_file, "a");
+                        for(i=0;i<NUM;i++) {
+                                if (sel_interface == PQOS_INTER_OS) {                                                                                                                                                                                                                core = pid_core_num(ptm[i]->pids[0]);
+                                        if (core < 0)                                                                                                                                                                                                                                        printf("Error retrieving core from PID\n");
+                                        print_results_to_csv(fd, cb_time, ptm[i]->pids[0], core, &ptm[i]->values);
+                                }
+                                else {
+                                        core = *ptm[i]->cores;
+                                        print_results_to_csv(fd, cb_time, 0, core, &ptm[i]->values);
+                                }
+                        }
+                        fclose(fd);
+                }
+
 		if (bandwidth_saturation(total_bandwidth_gb)) {
 			BW_saturated = true;
 			printf("\nDICER driver: Bandwidth Saturated -> Allocation Sampling\n");
@@ -294,31 +316,11 @@ void dicer_driver(void){
 			hp_mpki[i] = hp_mpki[i-1];
 		}
 		
-		today = localtime(&tv_s.tv_sec);
-		if (iscsv) {
-			if (today != NULL)
-				strftime(cb_time, sizeof(cb_time) - 1,"%Y-%m-%d %H:%M:%S", today);
-                	else
-                 	        strncpy(cb_time, "error", sizeof(cb_time) - 1);
-
-			FILE *fd = fopen_check_symlink(sel_output_file, "a");
-          		for(i=0;i<NUM;i++) {
-				if (sel_interface == PQOS_INTER_OS) {                                                                                                                                                                                                                core = pid_core_num(ptm[i]->pids[0]);
-                                	if (core < 0)                                                                                                                                                                                                                                        printf("Error retrieving core from PID\n");
-					print_results_to_csv(fd, cb_time, ptm[i]->pids[0], core, &ptm[i]->values);
-                        	}
-				else {
-					core = *ptm[i]->cores;
-					print_results_to_csv(fd, cb_time, 0, core, &ptm[i]->values);
-				}
-			}
-			fclose(fd);
-		}
-		
 		gettimeofday(&tv_e, NULL);
-		if (prev_sampling) {
+		if (prev_sampling || prev_reset) {
 			usec_start = timeval_to_usec(&tv_e);
 			prev_sampling = 0;
+			prev_reset = 0;
 		}
 		else
                 	usec_start = timeval_to_usec(&tv_s);
@@ -331,6 +333,7 @@ void dicer_driver(void){
                         gettimeofday(&tv_e, NULL);
                         usec_diff = timeval_to_usec(&tv_e) - usec_start;
                 }
+
                 /* move tv_s to the next interval */
                 usec_to_timeval(&tv_s, usec_start + interval);
 	}
@@ -372,7 +375,7 @@ void print_results_to_csv(FILE *f,char *time, const pid_t pid, int core, struct 
 	uint64_t cycles = (long unsigned) data->ipc_unhalted;
         uint64_t instructions = (uint64_t) data->ipc_retired;
 	if (pid > 0)
-		fprintf(f, "%s,%d,'%d',%.2f,%llu,%.1f,%.1f,%.1f,%lu,%lu\n", time, pid, core, ipc_o, (unsigned long long) data->llc_misses_delta, llc, mbl, mbr, instructions, cycles);
+		fprintf(f, "%s,%d,'%d',%.2f,%llu,%.1f,%.1f,%.1f,%lu,%lu,%d\n", time, pid, core, ipc_o, (unsigned long long) data->llc_misses_delta, llc, mbl, mbr, instructions, cycles, allocation[0]);
 	else
 		fprintf(f, "%s,'%d',%.2f,%llu,%.1f,%.1f,%.1f,%lu,%lu\n", time, core, ipc_o, (unsigned long long) data->llc_misses_delta, llc, mbl, mbr, instructions, cycles);
 }
@@ -460,6 +463,7 @@ void allocation_reset(void) {
 
 	if (CT_favoured == true) {
 		if (current_allocation < 19) {
+			prev_reset = 1;
 			int rollback_allocation = current_allocation;
 			current_allocation = opt_allocation;
 			apply_new_allocation(current_allocation);
@@ -480,7 +484,7 @@ void allocation_reset(void) {
 				}                                                                                                                                                                                                                                            else                                                                                                                                                                                                                                                 core = *res_data[j]->cores;
 				if (core == high_prio_core)
 					hp_ipc_res = res_ptr->ipc;
-				total_bandwidth_res = total_bandwidth_res + bytes_to_mb(res_ptr->mbm_local_delta) * coeff;
+				total_bandwidth_res = total_bandwidth_res + bytes_to_mb(res_ptr->mbm_local_delta) * coeff_sam;
 			}
 			if (bandwidth_saturation(transform_MB_to_GB(total_bandwidth_res))) {
 				BW_saturated = true;
@@ -500,6 +504,7 @@ void allocation_reset(void) {
 			printf("CT already in charge\n");
 	}
 	else {
+		prev_reset = 1;
 		current_allocation = opt_allocation;
 		apply_new_allocation(current_allocation);
 		struct timeval current_res_time;
@@ -519,7 +524,8 @@ void allocation_reset(void) {
                         }                                                                                                                                                                                                                                            else                                                                                                                                                                                                                                                 core = *res_data[j]->cores;
                         if (core == high_prio_core)
                                 hp_ipc_res = res_ptr->ipc;
-                        total_bandwidth_res = total_bandwidth_res + bytes_to_mb(res_ptr->mbm_local_delta) * coeff;                                                                                                                                           }
+                        total_bandwidth_res = total_bandwidth_res + bytes_to_mb(res_ptr->mbm_local_delta) * coeff_sam;
+		}
 		if (bandwidth_saturation(transform_MB_to_GB(total_bandwidth_res))) {
 			BW_saturated = true;
 			printf("\nAllocation Reset: Bandwidth Saturated -> Allocation Sampling\n");
@@ -726,5 +732,5 @@ void build_header_csv(char *hdr, const size_t sz_hdr) {
 		strncpy(hdr, "Time,Core,IPC,LLC Misses", sz_hdr - 1);
         strncat(hdr, ",LLC[KB]", sz_hdr - strlen(hdr) - 1);
         strncat(hdr, ",MBL[MB/s],MBR[MB/s]", sz_hdr - strlen(hdr) - 1);
-	strncat(hdr, ",Instructions,Cycles", sz_hdr - strlen(hdr) - 1);
+	strncat(hdr, ",Instructions,Cycles,Allocation", sz_hdr - strlen(hdr) - 1);
 }
